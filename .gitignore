@@ -205,3 +205,8 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# [사용자 정의 설정]
+venv/
+.env
+data_source/*.docx
