@@ -1,6 +1,7 @@
 import os
 import gradio as gr
 from dotenv import load_dotenv
+from urllib.parse import unquote
 
 # --- RAG 핵심 라이브러리 임포트 ---
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings

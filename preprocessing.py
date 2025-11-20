@@ -1,51 +1,87 @@
 import os
 import glob
+import bs4 # HTML 태그 정제용 (BeautifulSoup)
 from dotenv import load_dotenv
-from langchain_community.document_loaders import Docx2txtLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-# --- [3단계] 새로 추가된 라이브러리 ---
+# --- 문서 로더 임포트 ---
+from langchain_community.document_loaders import Docx2txtLoader, WebBaseLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
-# ------------------------------------
 
 # ---- 0. 환경 변수 로드 ----
-# .env 파일에서 API 키를 로드합니다.
 load_dotenv() 
 
 api_key = os.getenv("OPENAI_API_KEY")
 if not api_key:
     print("⚠️ OPENAI_API_KEY가 .env 파일에 설정되지 않았습니다.")
-    print("   스크립트를 중지합니다. .env 파일을 확인해주세요.")
-    exit() # 키가 없으면 3단계에서 무조건 실패하므로 중지
+    exit()
 else:
-    print("OPENAI_API_KEY 로드 완료.")
+    print("✅ OPENAI_API_KEY 로드 완료.")
 
 # ---- 1. 데이터 로드 (Load) ----
-DATA_PATH = "./data_source"
-print(f"\n--- 1단계 시작: '{DATA_PATH}' 폴더 로딩 ---")
+print("\n--- 1단계 시작: 데이터 소스 로딩 ---")
 
+# [1-1] 로컬 Docx 파일 로드
+DATA_PATH = "./data_source"
 pattern = os.path.join(DATA_PATH, "*.docx")
 file_paths = glob.glob(pattern)
 
-if not file_paths:
-    print(f"⚠️ {DATA_PATH}에서 .docx 파일을 찾지 못했습니다. data 폴더 경로와 확장자를 확인하세요.")
-    docs = []
-else:
-    docs = []
-    print(f"총 {len(file_paths)}개의 .docx 파일을 찾았습니다.")
+file_docs = []
+
+if file_paths:
+    print(f"📂 로컬: '{DATA_PATH}'에서 {len(file_paths)}개의 .docx 파일 발견")
     for path in file_paths:
         try:
-            print(f"- 로딩 중: {os.path.basename(path)}")
             loader = Docx2txtLoader(path)
-            docs.extend(loader.load())
+            file_docs.extend(loader.load())
+            print(f"   - [파일] 로드 성공: {os.path.basename(path)}")
         except Exception as e:
-            print(f"  ❌ {path} 로딩 중 에러: {e}")
+            print(f"   - [파일] ❌ 에러: {os.path.basename(path)} ({e})")
+else:
+    print(f"📂 로컬: '{DATA_PATH}'에 .docx 파일이 없습니다. (건너뜀)")
 
-print(f"\n총 {len(docs)}개의 문서(Document)가 로드되었습니다.")
+
+# [1-2] 웹사이트 URL 로드 (수정됨)
+WEB_URL = "https://ko.wikipedia.org/wiki/%EB%8D%B0%EC%9D%B4%ED%81%AC%EC%8A%A4%ED%8A%B8%EB%9D%BC_%EC%95%8C%EA%B3%A0%EB%A6%AC%EC%A6%98"
+
+web_docs = []
+try:
+    print(f"🌐 웹: URL 로딩 시작")
+    loader = WebBaseLoader(
+        web_paths=(WEB_URL,),
+        bs_kwargs=dict(
+            parse_only=bs4.SoupStrainer(
+                "div", attrs={"id": ["mw-content-text", "bodyContent"]}
+            )
+        ),
+    )
+    web_docs = loader.load()
+
+    # =========== [여기만 추가하시면 됩니다!] ===========
+    if web_docs:
+        for doc in web_docs:
+            # 1. 깨진 URL(%EC...)을 가져와서
+            original_source = doc.metadata.get('source', '')
+            # 2. 한글로 복구(Decode)하고
+            decoded_source = unquote(original_source)
+            # 3. 다시 덮어씌웁니다.
+            doc.metadata['source'] = decoded_source
+            
+        print(f"   - [변환 완료] 출처가 한글로 변경됨: {web_docs[0].metadata['source']}")
+    # =================================================
+        
+except Exception as e:
+    print(f"   - [웹] ❌ 에러 발생: {e}")
+
+
+# [1-3] 데이터 합치기
+all_docs = file_docs + web_docs
+print(f"\n📊 총 {len(all_docs)}개의 문서(Document)가 준비되었습니다.")
+
 
 # ---- 2. 데이터 분할 (Split) ----
-if docs: # 로드된 문서가 있을 때만 분할
+if all_docs:
     print("\n--- 2단계 시작: 문서 분할 ---")
 
     text_splitter = RecursiveCharacterTextSplitter(
@@ -53,51 +89,37 @@ if docs: # 로드된 문서가 있을 때만 분할
         chunk_overlap=150,
         length_function=len,
     )
-    chunks = text_splitter.split_documents(docs)
+    chunks = text_splitter.split_documents(all_docs)
 
-    print(f"총 {len(chunks)}개의 텍스트 조각(Chunk)이 생성되었습니다.")
+    print(f"🧩 총 {len(chunks)}개의 텍스트 조각(Chunk) 생성 완료")
 
     if chunks:
-        print("\n--- 첫 번째 조각 샘플 ---")
-        print(chunks[0].page_content[:200])
-        print(f"출처 (Metadata): {chunks[0].metadata}")
-    else:
-        print("⚠️ .docx 파일 내용은 있으나 텍스트 조각이 생성되지 않았습니다.")
+        print(f"   (샘플) 첫 번째 조각 출처: {chunks[0].metadata.get('source')}")
+        # 샘플 내용을 조금 출력해서 잘 가져왔는지 확인
+        print(f"   (샘플 내용) {chunks[0].page_content[:100]}...")
 else:
-    print("⚠️ 로드된 문서가 없어 2단계(분할)를 건너뜁니다.")
-    chunks = [] # 3단계에서 에러나지 않도록 빈 리스트로 초기화
+    print("⚠️ 로드된 데이터가 전혀 없어 종료합니다.")
+    exit()
 
 # ---- 3. 임베딩 및 벡터 스토어 저장 (Embed & Store) ----
 if chunks:
     print("\n--- 3단계 시작: 임베딩 및 벡터 스토어 생성 ---")
 
-    # 3-1. 임베딩 모델 초기화 (OpenAI API 키 사용)
-    # 한국어에 강점이 있는 text-embedding-3-small 모델 사용
     embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-    print("OpenAI 임베딩 모델 ('text-embedding-3-small')을 초기화했습니다.")
+    print("🤖 OpenAI 임베딩 모델 초기화 완료")
 
-    # 3-2. FAISS 벡터 스토어 생성
-    # chunks(문서 조각)와 임베딩 모델을 사용해 벡터 DB 생성
-    print("텍스트 조각들을 FAISS 벡터 스토어로 변환 중... (OpenAI API 호출 중...)")
+    print("📦 FAISS 벡터 스토어 생성 중... (API 호출)")
     try:
         vectorstore = FAISS.from_documents(
             documents=chunks, 
             embedding=embeddings
         )
-        print("FAISS 벡터 스토어 생성 완료!")
-
-        # 3-3. 벡터 스토어 로컬에 저장
-        # 나중에 재사용할 수 있도록 파일로 저장
+        
         VECTORSTORE_PATH = "faiss_index"
         vectorstore.save_local(VECTORSTORE_PATH)
-        print(f"벡터 스토어를 로컬 폴더 '{VECTORSTORE_PATH}'에 성공적으로 저장했습니다.")
+        print(f"✅ 저장 완료! 벡터 스토어가 '{VECTORSTORE_PATH}' 폴더에 저장되었습니다.")
 
     except Exception as e:
-        print(f"\n[!!! 오류] 3단계 임베딩 또는 벡터 스토어 생성/저장 중 오류 발생: {e}")
-        print("  -> OPENAI_API_KEY가 올바른지, 잔액이 충분한지 확인하세요.")
-        print("  -> 'langchain-openai', 'faiss-cpu' 라이브러리가 설치되었는지 확인하세요.")
-
+        print(f"\n❌ [오류] 임베딩/저장 실패: {e}")
 else:
-    print("\n--- 3단계 건너뜀: 처리할 텍스트 조각(chunks)이 없습니다. ---")
-
-print("\n--- 모든 전처리 단계(1-3) 완료 ---")
+    print("❌ 처리할 텍스트 조각이 없습니다.")
