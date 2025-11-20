@@ -210,3 +210,4 @@ __marimo__/
 venv/
 .env
 data_source/*.docx
+korea-sw-22-key.pem
